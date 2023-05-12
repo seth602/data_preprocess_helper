@@ -5,5 +5,5 @@ Step through each feature to determine what preprocessing should be done. Then a
 
 TO-DO:
 1. simplify class to not retain a copy of the dataframe
-2. allow for user to specify capping
+2. ~~allow for user to specify capping~~ Updated 5/12/2023
 3. update response variable to be used for categorical encoding (one-hot, ordinal encoding, etc.)
