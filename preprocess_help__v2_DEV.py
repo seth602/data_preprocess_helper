@@ -65,7 +65,7 @@ class DataPreProcess:
 
         return user_input
 
-    def select_caps(X: np.array, col: str) -> list:
+    def select_caps(X: pd.Series, col: str) -> list:
         '''
         Allow user to see the distribution with different percent cutoffs and select quantile caps
 
@@ -73,7 +73,7 @@ class DataPreProcess:
         '''
         
         clear_output(wait=True)
-        temp_vals = X[~np.isnan(X)]
+        temp_vals = X.dropna().values
         #min_val = np.min(temp_vals)
         #max_val = np.max(temp_vals)
         bot_5 = np.percentile(temp_vals, 5)
@@ -93,16 +93,17 @@ class DataPreProcess:
         cap_decision_lower = float(input("Input lower cap (percent ONLY): "))
         cap_decision_upper = float(input("Input upper cap (percent ONLY): "))
         assert cap_decision_lower < cap_decision_upper, "upper bound can't be smaller than lower bound"
-        assert cap_decision_lower >= 0 & cap_decision_lower <= 1 & cap_decision_upper >= 0 & cap_decision_upper <= 1, "bounds need to be between [0, 1]"
+        assert (cap_decision_lower >= 0) & (cap_decision_lower <= 1) & (cap_decision_upper >= 0) & (cap_decision_upper <= 1), "bounds need to be between [0, 1]"
 
         return [cap_decision_lower, cap_decision_upper]
 
 
 
-    def recommend_float_transformation(X: np.array, view_plots: bool = True) -> tuple:
+    def recommend_float_transformation(X: pd.Series, view_plots: bool = True) -> tuple:
         '''
         return the recommended best transformation (between yeo-johnson, square root, log1p, box-cox)
         '''
+        X = X.dropna().values
         min_x = np.min(X)
         original_skew = skew(X)
         yj_x = PowerTransformer(method='yeo-johnson').fit_transform(X.reshape(-1, 1))
@@ -157,13 +158,13 @@ class DataPreProcess:
 
 
     # MAKE A FUNCTION TO PROCESS EACH TYPE OF VARIABLE
-    def process_categorical_column(self, col_name: str, cat_output: str, auto_process: str = 'no') -> None:
+    def process_categorical_column(self, col_name: str, cat_output: str, auto_process: bool = False) -> None:
         '''
         for a chosen categorical column, either get user's input (if auto_process == 'no')
         or decide best transformations
         '''
         list_of_transformers = []
-        if auto_process == 'no':
+        if auto_process == False:
             if cat_output is None:
                 text_for_input = f"\nHow should {col_name} be handled?"
                 list_for_input = ['one-hot encode', 'nominal encode', 'category type']
@@ -186,11 +187,10 @@ class DataPreProcess:
             list_of_transformers.append("rare level category grouping")
         list_of_transformers.append(cat_output)
 
-        self.column_type[col_name] = "category"
         self.column_transformation[col_name] = list_of_transformers
 
 
-    def process_float_column(self, col_values: np.array, col_name: str, quantile_ls: list, auto_process: str = 'no') -> None:
+    def process_float_column(self, col_values: pd.Series, col_name: str, quantile_ls: list, auto_process: bool = False) -> None:
         '''
         for a chosen floating point column, either get user's input (if auto_process == 'no')
         or decide best transformations and quantile capping
@@ -199,7 +199,7 @@ class DataPreProcess:
         ###############
         # skew transformers
         ################
-        if auto_process == 'no':
+        if auto_process == False:
             view_transformations = DataPreProcess.input_with_options("Do you want to view data transformations?", 
                                                                     ["yes", "no"], "yes")
             if view_transformations == "yes":
@@ -216,7 +216,7 @@ class DataPreProcess:
         ###############
         # quantile decision
         ################
-        if auto_process == 'no':
+        if auto_process == False:
             set_quantiles = DataPreProcess.input_with_options(f"Do you want to set caps on {col_name}?", 
                                                                     ["yes", "no"], "yes")
             if set_quantiles == "yes":
@@ -230,7 +230,7 @@ class DataPreProcess:
         ###############
         # mean impute decision
         ################
-        if auto_process == 'no':
+        if auto_process == False:
             impute_decision = DataPreProcess.input_with_options(f"Do you want to impute missing values with the mean?", 
                                                                     ["yes", "no"], "yes")
         else:
@@ -244,29 +244,95 @@ class DataPreProcess:
         if impute_decision == "yes":
             list_of_transformers.append("impute")
 
-        self.column_type[col_name] = "numeric"
         self.column_transformation[col_name] = list_of_transformers
+
+
+    def determine_col_type(self, X: pd.Series, col_type: str = None) -> None:
+        '''
+        Take in a column (pd.Series) and determine the best column type
+        Update the self.column_type dictionary
+        '''
+        from pandas.api.types import is_string_dtype
+        from pandas.api.types import is_numeric_dtype
+
+        if col_type is None:
+            if is_string_dtype(X):
+                uniq_percent = len(set(X)) / len(X)
+                if uniq_percent < 0.05:
+                    self.column_type[X.name] = "category"
+                else: 
+                    self.column_type[X.name] = "skip"
+
+            if is_numeric_dtype(X):
+                if len(set(X)) == 2:
+                    self.column_type[X.name] = "binary"
+                else:
+                    self.column_type[X.name] = "numeric"
+
+        else:
+            self.column_type[X.name] = col_type
+
 
             
 
+    def auto_process_columns(self, df: pd.DataFrame, single_col: str = None):
+        '''
+        Step through each column (or process single col) automatically and choose best option
+        '''
+        if single_col is not None:
+            assert single_col in list(df), "column name not in dataframe (Did you misspell?)"
+            loop_list = list(enumerate([single_col]))
+        else:
+            loop_list = list(enumerate(list(df)))
+            
+        
+        for i,c in loop_list:
+            clear_output(wait=True)
+            print("_____________________________")
+            print("Pre-processing selection\n")
+            DataPreProcess.fun_progress_in_loop( i, len(loop_list) )
+            print("\n\n*** {} *** \n\n".format(c))
+
+            temp_col = df[c].dropna().values
+            num_missing = df[c].shape[0] - temp_col.shape[0]
+            percent_missing = num_missing / df[c].shape[0]
+            if percent_missing <= 0.05:
+                percent_color_text = '\x1b[5;30;42m'
+            elif percent_missing <= 0.25:
+                percent_color_text = '\x1b[2;40;33m'
+            else:
+                percent_color_text = '\x1b[0;37;41m'
+
+            print(df[c].describe())
+            print(percent_color_text + "{:,} ({:.0%}) number of NAs\x1b[0m".format(num_missing, percent_missing))
+            sleep(0.5)
+            if percent_missing > 0.25:
+                self.column_type[c] = "skip"
+                continue
+
+            DataPreProcess.determine_col_type(self, df[c], col_type=None)
+
+            if self.column_type[c] == 'numeric':
+                DataPreProcess.process_float_column(self, df[c], col_name=c, quantile_ls=[0.05, 0.90], auto_process=True)
+
+            elif self.column_type[c] == 'category':
+                DataPreProcess.process_categorical_column(self, col_name=c, cat_output='one-hot encode', auto_process=True)
+
+            elif self.column_type[c] == 'binary':
+                self.column_transformation[c] = ["impute"]
 
     
         
         
-    def process_columns(self, df, single_col='no column specified'):
+    def process_columns(self, df: pd.DataFrame, single_col: str = None):
         '''
         Step through each column and get input from user
         OR Process a single column
         '''
-        if single_col != 'no column specified':
+        if single_col is not None:
             assert single_col in list(df), "column name not in dataframe (Did you misspell?)"
             loop_list = list(enumerate([single_col]))
-            print("Column: {} will be updated\n".format(single_col))
-            for list_check in [self.skip_cols, self.id_cols, self.float_cols, self.cat_cols, 
-                               self.ordinal_cols, self.other_cols, self.binary_cols, self.response_cols]:
-                if single_col in list_check:
-                    list_check.remove(single_col)
-                    #break
+
         else:
             loop_list = list(enumerate(list(df)))
             
